@@ -45,8 +45,8 @@ static int gShowBackButton = 0;
 #define MAX_COLS 96
 #define MAX_ROWS 32
 
-#define MENU_MAX_COLS 64
-#define MENU_MAX_ROWS 250
+#define MENU_MAX_COLS 76
+#define MENU_MAX_ROWS 275
 
 #define MIN_LOG_ROWS 3
 
@@ -227,10 +227,28 @@ static void draw_progress_locked()
     }
 }
 
-static void draw_text_line(int row, const char* t) {
-  if (t[0] != '\0') {
-    gr_text(0, (row+1)*CHAR_HEIGHT-1, t);
-  }
+#define LEFT_ALIGN 0
+#define CENTER_ALIGN 1
+#define RIGHT_ALIGN 2
+
+static void draw_text_line(int row, const char* t, int align) {
+    int col = 0;
+    if (t[0] != '\0') {
+        int length = strnlen(t, MENU_MAX_COLS) * CHAR_WIDTH;
+        switch(align)
+        {
+            case LEFT_ALIGN:
+                col = 1;
+                break;
+            case CENTER_ALIGN:
+                col = ((gr_fb_width() - length) / 2);
+                break;
+            case RIGHT_ALIGN:
+                col = gr_fb_width() - length - 1;
+                break;
+        }
+     gr_text(col, (row+1)*CHAR_HEIGHT-1, t);
+    }
 }
 
 //#define MENU_TEXT_COLOR 255, 160, 49, 255
@@ -258,12 +276,24 @@ static void draw_screen_locked(void)
         if (show_menu) {
 #ifndef BOARD_TOUCH_RECOVERY
             gr_color(MENU_TEXT_COLOR);
+
+      int batt_level = 0;
+            batt_level = get_batt_stats();
+            
+            if(batt_level < 21) {
+                gr_color(255, 0, 0, 255);
+            }
+
+            char batt_text[40];
+            sprintf(batt_text, "[%d%%]", batt_level);
+            draw_text_line(0, batt_text, RIGHT_ALIGN);
+
             gr_fill(0, (menu_top + menu_sel - menu_show_start) * CHAR_HEIGHT,
                     gr_fb_width(), (menu_top + menu_sel - menu_show_start + 1)*CHAR_HEIGHT+1);
 
             gr_color(HEADER_TEXT_COLOR);
             for (i = 0; i < menu_top; ++i) {
-                draw_text_line(i, menu[i]);
+                draw_text_line(i, menu[i], LEFT_ALIGN);
                 row++;
             }
 
@@ -276,11 +306,11 @@ static void draw_screen_locked(void)
             for (i = menu_show_start + menu_top; i < (menu_show_start + menu_top + j); ++i) {
                 if (i == menu_top + menu_sel) {
                     gr_color(255, 255, 255, 255);
-                    draw_text_line(i - menu_show_start , menu[i]);
+                    draw_text_line(i - menu_show_start , menu[i], LEFT_ALIGN);
                     gr_color(MENU_TEXT_COLOR);
                 } else {
                     gr_color(MENU_TEXT_COLOR);
-                    draw_text_line(i - menu_show_start, menu[i]);
+                    draw_text_line(i - menu_show_start, menu[i], LEFT_ALIGN);
                 }
                 row++;
                 if (row >= max_menu_rows)
@@ -305,7 +335,7 @@ static void draw_screen_locked(void)
 
         int r;
         for (r = 0; r < (available_rows < MAX_ROWS ? available_rows : MAX_ROWS); r++) {
-            draw_text_line(start_row + r, text[(cur_row + r) % MAX_ROWS]);
+            draw_text_line(start_row + r, text[(cur_row + r) % MAX_ROWS], LEFT_ALIGN);
         }
     }
 }
@@ -383,7 +413,33 @@ static void *progress_thread(void *cookie)
     return NULL;
 }
 
+//kanged this vibrate stuff from teamwin (thanks guys!)
+#define VIBRATOR_TIMEOUT_FILE "/sys/class/timed_output/vibrator/enable"
+#define VIBRATOR_TIME_MS 20
+
 static int rel_sum = 0;
+static int in_touch = 0; //1 = in a touch
+static int slide_right = 0;
+static int slide_left = 0;
+static int touch_x = 0;
+static int touch_y = 0;
+static int old_x = 0;
+static int old_y = 0;
+static int diff_x = 0;
+static int diff_y = 0;
+
+
+static void reset_gestures() {
+    diff_x = 0;
+    diff_y = 0;
+    old_x = 0;
+    old_y = 0;
+    touch_x = 0;
+    touch_y = 0;
+    printf("Gesture Tracking Reset\n\n");
+}
+
+static const char * const absval[6] = { "Value", "Min  ", "Max  ", "Fuzz ", "Flat ", "Resolution "};
 
 static int input_callback(int fd, short revents, void *data)
 {
@@ -401,6 +457,8 @@ static int input_callback(int fd, short revents, void *data)
 #endif
 
     if (ev.type == EV_SYN) {
+  printf("SYN Generated!\n");
+  printf("ev.type: %x, ev.code: %x, ev.value: %i\n", ev.type, ev.code, ev.value);
         return 0;
     } else if (ev.type == EV_REL) {
         if (ev.code == REL_Y) {
@@ -427,6 +485,122 @@ static int input_callback(int fd, short revents, void *data)
         rel_sum = 0;
     }
 
+    
+    int abs[6] = {0};
+    int k;
+
+    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), abs);
+    /*for (k = 0; k < 6; k++)
+   if ((k < 3) || abs[k])
+  printf("      %s %6d\n", absval[k], abs[k]);*/
+    int max_x_touch = abs[2];
+
+    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), abs);
+    /*for (k = 0; k < 6; k++)
+   if ((k < 6) || abs[k])
+  printf("      %s %6d\n", absval[k], abs[k]);*/
+    int max_y_touch = abs[2];
+
+    //printf("x and y bounds: %i x %i\n", max_x_touch, max_y_touch);
+
+    //start touch code
+    printf("ev.type: %x, ev.code: %x, ev.value: %i\n", ev.type, ev.code, ev.value);
+    if(ev.type == EV_ABS && ev.code == ABS_MT_TRACKING_ID) {
+        if(in_touch == 0) {
+            in_touch = 1; //starting to track touch...
+            reset_gestures();
+        } else {
+            //finger lifted! lets run with this
+            ev.type = EV_KEY; //touch panel support!!!
+            int keywidth = gr_fb_width() / 4;
+            /*if(touch_y > gr_fb_height() - board_touch_button_height && touch_x > 0) {
+                //they lifted in the touch panel region
+                if(touch_x < keywidth) {
+                    //back button
+                    ev.code = KEY_BACK;
+                } else if(touch_x < keywidth*2) {
+                    //up button
+                    ev.code = KEY_VOLUMEUP;
+                } else if(touch_x < keywidth*3) {
+                    //down button
+                    ev.code = KEY_VOLUMEDOWN;
+                } else {
+                    //enter key
+                    ev.code = KEY_POWER;
+                }
+                vibrate(VIBRATOR_TIME_MS);
+            }*/
+            if(slide_right == 1) {
+                ev.code = KEY_POWER;
+                slide_right = 0;
+            } else if(slide_left == 1) {
+                ev.code = KEY_BACK;
+                slide_left = 0;
+            }
+
+            ev.value = 1;
+            in_touch = 0;
+            reset_gestures();
+        }
+    } else if(ev.type == EV_ABS && ev.code == ABS_MT_POSITION_X) {
+        old_x = touch_x;
+  float touch_x_rel = (float)ev.value / (float)max_x_touch;
+  //printf("rel: %f\n", touch_x_rel);        
+  touch_x = touch_x_rel * gr_fb_width();
+  //printf("Touch X is: %i\n", touch_x);
+        if(old_x != 0) diff_x += touch_x - old_x;
+
+  //printf("X diff is: %i\n", diff_x);
+    
+        //if(touch_y < gr_fb_height() - board_touch_button_height) {
+            if(diff_x > 100) {
+                //printf("Gesture forward generated\n");
+                slide_right = 1;
+                //ev.code = KEY_POWER;
+                //ev.type = EV_KEY;
+                reset_gestures();
+            } else if(diff_x < -100) {
+                //printf("Gesture back generated\n");
+                slide_left = 1;
+                //ev.code = KEY_BACK;
+                //ev.type = EV_KEY;
+                reset_gestures();
+            }
+        /*} else {
+          input_buttons();
+          //reset_gestures();
+        }*/
+    } else if(ev.type == EV_ABS && ev.code == ABS_MT_POSITION_Y) {
+        old_y = touch_y;
+        float touch_y_rel = (float)ev.value / (float)max_y_touch;
+  printf("rel: %f\n", touch_y_rel);        
+  touch_y = touch_y_rel * gr_fb_height();
+  printf("Touch Y is: %i\n", touch_y);
+  printf("Old Y is: %i\n", old_y);
+        if(old_y != 0) diff_y += touch_y - old_y;
+  printf("Diff is: %i\n", diff_y);
+                
+        //if(touch_y < gr_fb_height() - 196) {
+            if(diff_y > 80) {
+                //printf("Gesture Down generated\n");
+                ev.code = KEY_VOLUMEDOWN;
+                ev.type = EV_KEY;
+                reset_gestures();
+            } else if(diff_y < -80) {
+                //printf("Gesture Up generated\n");
+                ev.code = KEY_VOLUMEUP;
+                ev.type = EV_KEY;
+                reset_gestures();
+            }
+        //} else {
+            //input_buttons();
+            //reset_gestures();
+        //}
+    }
+    
+    
+    //end touch code
+
     if (ev.type != EV_KEY || ev.code > KEY_MAX)
         return 0;
 
@@ -444,7 +618,7 @@ static int input_callback(int fd, short revents, void *data)
     const int queue_max = sizeof(key_queue) / sizeof(key_queue[0]);
     if (ev.value > 0 && key_queue_len < queue_max) {
         key_queue[key_queue_len++] = ev.code;
-
+        //printf("added %i to the queue\n", ev.code);
         if (boardEnableKeyRepeat) {
             struct timeval now;
             gettimeofday(&now, NULL);
@@ -576,6 +750,11 @@ void ui_init(void)
     pthread_t t;
     pthread_create(&t, NULL, progress_thread, NULL);
     pthread_create(&t, NULL, input_thread, NULL);
+
+    ui_print("This recovery uses gestures for control.\n");
+    ui_print("Swipe up and down to change selections.\n");
+    ui_print("Swipe to the right for enter.\n");
+    ui_print("Swipe to the left for back.\n");
 }
 
 char *ui_copy_image(int icon, int *width, int *height, int *bpp) {
@@ -1053,3 +1232,25 @@ void ui_increment_frame() {
     gInstallingFrame =
         (gInstallingFrame + 1) % ui_parameters.installing_frames;
 }
+
+int get_batt_stats(void)
+{
+    static int level = -1;
+
+    char value[4];
+    FILE * capacity;
+    if ( capacity = fopen("/sys/class/power_supply/battery/capacity","r") ) {
+        fgets(value, 4, capacity);
+        fclose(capacity);
+    } else if ( capacity = fopen("/sys/devices/platform/android-battery/power_supply/android-battery/capacity","r") ) {
+        fgets(value, 4, capacity);
+        fclose(capacity);    
+    }
+    level = atoi(value);
+    if (level > 100)
+        level = 100;
+    if (level < 0)
+        level = 0;
+    return level;
+}
+
