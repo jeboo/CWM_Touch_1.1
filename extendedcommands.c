@@ -164,7 +164,7 @@ void show_install_update_menu()
                 break;
             }
             case ITEM_CHOOSE_ZIP:
-                show_choose_zip_menu("/sdcard/");
+                show_choose_zip_menu("/sdcard/0/");
                 write_recovery_version();
                 break;
             case ITEM_APPLY_SIDELOAD:
